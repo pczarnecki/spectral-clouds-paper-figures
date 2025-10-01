@@ -6,9 +6,49 @@ import scipy as sp
 from scipy.constants import speed_of_light as c
 import scipy.constants
 from scipy.constants import sigma as SB_sigma
+import metpy.calc as mpcalc
+from metpy.units import units
 
 
 from importlib import reload
+
+# create idealized moist-adiabatic profile
+def create_profile_moist(T_s, rh, p):
+    ''' 
+    create an idealized profile with given surface temperature that follows
+    a moist adiabatic lapse rate until a 200K isothermal stratosphere
+
+    IN:
+        T_s [K]: given surface temperature
+        rh [%]: given relative humidity, constant throughout atmosphere
+        
+    OUT:
+        T_profile [K]: temperature profile
+        vmr [unitless]: water vapor volume mixing ratio
+        q_star_s [kg/kg]: saturation mass mixing ratio of water vapor at the surface        
+    
+    '''
+    T_s = units.Quantity(T_s, 'K')
+    #rh = units.Quantity(rh, 'dimensionless')
+    # create pressure, temperature, and mixing ratio profiles for each initial temp
+    pressure_profile = units.Quantity(p, 'Pa')
+    pressure_profile_temp = p[np.where(p > 100)[0]]
+    pressure_profile_temp = units.Quantity(pressure_profile_temp, 'Pa')
+    p_s = units.Quantity(p[0], 'Pa')
+
+    temperature = mpcalc.moist_lapse(pressure_profile_temp, T_s, p_s)
+    idx = np.where(temperature > units.Quantity(200, 'K'))[0]
+    T_profile = units.Quantity(200, 'K')*np.ones(len(p))
+    T_profile[:idx[-1] + 1] = temperature[idx]
+
+    mass_mixing_ratio = mpcalc.mixing_ratio_from_relative_humidity(pressure_profile, T_profile, rh).to('kg/kg') 
+    q_star_s = mpcalc.saturation_mixing_ratio(p_s, T_profile[0]).to('kg/kg')
+
+    # mmr = vmr * molar mass / molar mass of dry air
+    vmr = mass_mixing_ratio * (29 / 18.015)       
+    
+    return T_profile, vmr, q_star_s
+
 
 # Planck function
 def B_nu(T, nu):
