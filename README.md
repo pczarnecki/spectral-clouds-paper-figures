@@ -1,0 +1,1 @@
+Python functions and code necessary to perform the analysis and create the figures in Czarnecki and Pincus, "How Clear-Sky Spectral Overlap Shapes Radiation in Cloudy Atmospheres". Corresponding data can be found at https://doi.org/10.5281/zenodo.17246710.
