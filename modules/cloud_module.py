@@ -112,7 +112,6 @@ def nu_em_cont(T_em, gammaLR, rh, T0=300):
         R [cm-1]: right intersection wavenumber
         L [cm-1]: left intersection wavenumber
     """
-
     ## get continuum parameters
     k = cs.kappaX0
     esat0 = cs.esat(T0)
@@ -123,7 +122,7 @@ def nu_em_cont(T_em, gammaLR, rh, T0=300):
 
     # calculate reference optical depth
     tau_star = (cs.R/cs.Rv) * k*esat0/(cs.g*cs.D)
-    
+
     # perform inversion for intersection
     term = (T_em/T0)**(2*gammaWV - a) * (rh**2 * tau_star)/((2*gammaWV - a)*gammaLR)
     
@@ -183,7 +182,7 @@ def calc_model_CRE(nu, T_s, T_em_cloud, gammaLR, RH, qco2):
     T_em_H2O_2_all = np.minimum(cs.get_Trad_h2o(nu, T_s, gammaLR, RH)[co2_idx:], T_s)
 
     # find right intersection of continuum with the surface
-    nu_cont_R = nu_em_cont(T_s, T_s, gammaLR, RH)[0]
+    nu_cont_R = nu_em_cont(T_s, gammaLR, RH)[0]
     nu_cont_R = constrain_nu(nu, nu_cont_R)
 
     # is continuum entirely optically thick? or do we have to account for overlap between the
@@ -213,6 +212,61 @@ def calc_model_CRE(nu, T_s, T_em_cloud, gammaLR, RH, qco2):
     
     return CRE
 
+def calc_active_nus(nu, T_s, T_em_cloud, gammaLR, RH, qco2):
+    """
+    calculate the spectral width of the cloud
+    In:
+        nu [cm-1]: wavenumber array
+        T_s [K]: surface temperature
+        T_em_cloud [K]: cloud top temperature
+        gammaLR [K/km]: bulk atmospheric lapse rate
+        RH [-]: relative humidity (0-1)
+        qco2 [-]: molar/volume mixing ratio of CO2
+    Out:
+        CRE [W/m^2]: cloud radiative effect    
+    """
+
+    # get left and right intersection of rotational band with the cloud
+    nu_H2O_1_R, nu_H2O_1_L = nu_em_H2O(150, cs.ln0, cs.kappa0, T_em_cloud, T_s, gammaLR, RH)
+    nu_H2O_1_R, nu_H2O_1_L = constrain_nu(nu, nu_H2O_1_R), constrain_nu(nu, nu_H2O_1_L)
+
+    # get left and right intersection of rotational band with the surface
+    nu_H2O_1_R_s, nu_H2O_1_L_s = nu_em_H2O(150, cs.ln0, cs.kappa0, T_s, T_s, gammaLR, RH)
+    nu_H2O_1_R_s = np.maximum(150, nu_H2O_1_R_s)
+    nu_H2O_1_R_s, nu_H2O_1_L_s = constrain_nu(nu, nu_H2O_1_R_s), constrain_nu(nu, nu_H2O_1_L_s)
+    
+    # get left and right intersection of CO2 band with the cloud
+    nu_CO2_R, nu_CO2_L = nu_em_CO2(qco2, T_em_cloud, T_s, gammaLR)
+    nu_CO2_R, nu_CO2_L = constrain_nu(nu, nu_CO2_R), constrain_nu(nu, nu_CO2_L)
+
+    # get left and right intersection of CO2 band with the surface
+    nu_CO2_R_s, nu_CO2_L_s = nu_em_CO2(qco2, T_s, T_s, gammaLR)
+    nu_CO2_R_s, nu_CO2_L_s = constrain_nu(nu, nu_CO2_R_s), constrain_nu(nu, nu_CO2_L_s)
+    
+    # figure out where to cut off the continuum
+    co2_idx = np.where(nu > nu_CO2_R)[0][0]
+
+    # find continuum emission temperature
+    T_em_cont_all = np.minimum(cs.get_Trad_cntm(nu, gammaLR, RH)[co2_idx:], T_s)
+
+    # find right intersection of continuum with the surface
+    nu_cont_R = nu_em_cont(T_s, gammaLR, RH)[0]
+    nu_cont_R = constrain_nu(nu, nu_cont_R)
+    
+    if np.max(T_em_cont_all) == T_s:
+        nu_cont_R = nu_em_H2O(1500, cs.ln1, cs.kappa1, T_s, T_s, gammaLR, RH)[1]
+        nu_cont_R = constrain_nu(nu, nu_cont_R)
+        
+    # calculate the intersections of the v-r band with the cloud
+    nu_H2O_2_R, nu_H2O_2_L = nu_em_H2O(1500, cs.ln1, cs.kappa1, T_em_cloud, T_s, gammaLR, RH)
+    nu_H2O_2_R, nu_H2O_2_L = constrain_nu(nu, nu_H2O_2_R), constrain_nu(nu, nu_H2O_2_L)
+
+    active_nu = np.max([0, nu_CO2_L - nu_H2O_1_R]) +  np.max([0, nu_H2O_2_L - nu_CO2_R])
+
+    mid_nu = np.mean([np.max([0, nu_CO2_L - nu_H2O_1_R]),  np.max([0, nu_H2O_2_L - nu_CO2_R])])
+    
+    return active_nu, mid_nu
+
 def OLR_from_Tem(nu, T_em):
     spectral_OLR = np.pi*am.B_nu(T_em, nu)
 
@@ -229,7 +283,7 @@ c_co2 = 0.7
 c_h2o = 0.56
 c_cnt = 0.41
 
-def get_lambda_h2o(nu, Ts, Tstrat, Tcloud, RH, qco2, T0=300., gammaLR=None, dgammaLRdTs=None):
+def get_lambda_h2o(nu, Ts, Tstrat, Tcloud, RH, qco2, T0=300., gammaLR=None, dgammaLRdTs=None, dTs = 1):
     """
     water vapor feedback above cloud top
     In:
@@ -242,6 +296,7 @@ def get_lambda_h2o(nu, Ts, Tstrat, Tcloud, RH, qco2, T0=300., gammaLR=None, dgam
         T0 [K]: reference temperature
         gammaLR [K/km]: bulk atmospheric lapse rate (if None, compute)
         dgammaLRdTs [K/km/K]: derivative of bulk atmospheric lapse rate w.r.t. surface temperature (if None, compute)
+        dTs [K]: amount of surface warming (default 1 K)
     Out:
         lambda_h2o [W/m^2/K]: water vapor feedback above cloud top
     
@@ -258,7 +313,7 @@ def get_lambda_h2o(nu, Ts, Tstrat, Tcloud, RH, qco2, T0=300., gammaLR=None, dgam
 
     # get d(gammaLR)/dTs
     if dgammaLRdTs is None:
-        dTs = 1.   # compute derivative numerically for now -> assumes a moist-adiabatic response!
+        #dTs = 1.   # compute derivative numerically for now -> assumes a moist-adiabatic response!
         dgammaLRdTs = (cs.get_gammaLR(Ts+dTs, Tstrat) - cs.get_gammaLR(Ts, Tstrat))/dTs   # should be <0
     else:
         pass   # take as input...
@@ -308,9 +363,9 @@ def get_lambda_h2o(nu, Ts, Tstrat, Tcloud, RH, qco2, T0=300., gammaLR=None, dgam
     lambda_h2o_1 = c_h2o*np.pi*am.dPlanckdT_n(nu_mid_1, Th2o) * (dnu_1) * (dTh2odTs_ts + dTh2odTs_gamma * dgammaLRdTs)
     lambda_h2o_2 = c_cnt*np.pi*am.dPlanckdT_n(nu_mid_2, Th2o_2) * (dnu_2) * (dTh2odTs_ts_2 + dTh2odTs_gamma_2 * dgammaLRdTs)
     
-    return lambda_h2o_1 + lambda_h2o_2
+    return (lambda_h2o_1 + lambda_h2o_2)/dTs
 
-def get_lambda_cntm(nu, Ts, Tstrat, Tcloud, RH, qco2, T0=300., gammaLR=None, dgammaLRdTs=None):
+def get_lambda_cntm(nu, Ts, Tstrat, Tcloud, RH, qco2, T0=300., gammaLR=None, dgammaLRdTs=None, dTs = 1):
     """
     water vapor continuum feedback above cloud top
     In:
@@ -323,6 +378,7 @@ def get_lambda_cntm(nu, Ts, Tstrat, Tcloud, RH, qco2, T0=300., gammaLR=None, dga
         T0 [K]: reference temperature
         gammaLR [K/km]: bulk atmospheric lapse rate (if None, compute)
         dgammaLRdTs [K/km/K]: derivative of bulk atmospheric lapse rate w.r.t. surface temperature (if None, compute)
+        dTs [K]: amount of surface warming (default 1 K)
     Out:
         lambda_cntm [W/m^2/K]: water vapor continuum feedback above cloud top
     """
@@ -340,28 +396,26 @@ def get_lambda_cntm(nu, Ts, Tstrat, Tcloud, RH, qco2, T0=300., gammaLR=None, dga
 
     # get d(gammaLR)/dTs
     if dgammaLRdTs is None:
-        dTs = 1.   # compute derivative numerically for now -> assumes a moist-adiabatic response!
+        #dTs = 1.   # compute derivative numerically for now -> assumes a moist-adiabatic response!
         dgammaLRdTs = (cs.get_gammaLR(Ts+dTs, Tstrat) - cs.get_gammaLR(Ts, Tstrat))/dTs   # should be <0
     else:
         pass   # take as input...
-
     # get continuum optical thickness
     tau_cntm_star = cs.R/cs.Rv * cs.kappaX*esat0/(cs.g*cs.D)
-
     # get intersection of co2 band with cloud top
     nu_CO2_R, nu_CO2_L = nu_em_CO2(qco2, Tcloud, Ts, gammaLR)
     nu_CO2_R, nu_CO2_L = constrain_nu(nu, nu_CO2_R), constrain_nu(nu, nu_CO2_L)
-
     co2_idx = np.where(nu > nu_CO2_R)[0][0]
 
     # determine how much of continuum is optically thick
     T_em_cont_all = np.minimum(cs.get_Trad_cntm(nu, gammaLR, RH)[co2_idx:], Tcloud)
-
-    nu_cont_R = nu_em_cont(Tcloud, Ts, gammaLR, RH)[0]
+    #nu_cont_R = nu_em_cont(Tcloud, Ts, gammaLR, RH)[0]
+    nu_cont_R = nu_em_cont(Tcloud, gammaLR, RH)[0]
     nu_cont_R = constrain_nu(nu, nu_cont_R)
-    if np.max(T_em_cont_all) == Tcloud:
-        nu_cont_R = nu_em_H2O(1500, cs.ln1, cs.kappa1, Tcloud, Ts, gammaLR, RH)[1]
-        nu_cont_R = constrain_nu(nu, nu_cont_R)
+    #if np.max(T_em_cont_all) != Tcloud:
+    #    print("true")
+    #    nu_cont_R = nu_em_H2O(1500, cs.ln1, cs.kappa1, Tcloud, Ts, gammaLR, RH)[1]
+    #    nu_cont_R = constrain_nu(nu, nu_cont_R)
 
     dnu = np.maximum(0, nu_cont_R - nu_CO2_R)
 
@@ -372,9 +426,9 @@ def get_lambda_cntm(nu, Ts, Tstrat, Tcloud, RH, qco2, T0=300., gammaLR=None, dga
     tau_cnt_cld = tau_cntm_star[co2_idx:] * RH**2 * 1./( (2.*gammaWV-cs.cntm_alpha)*gammaLR) *(Tcloud/T0)**(2.*gammaWV-cs.cntm_alpha)
     lambda_cntm = (0.5)*c_cnt*np.pi*am.dPlanckdT_n(nu_CO2_R, T_em_cont_all[0]) *(dTcntdTs_gamma[0] * dgammaLRdTs) *(dnu) *(1.-np.exp(-np.mean(tau_cnt_cld)))
 
-    return lambda_cntm
+    return lambda_cntm/dTs
 
-def get_lambda_co2(Ts, Tstrat, Tcloud, q, gammaLR=None, dgammaLRdTs=None, Ts0 = 310):
+def get_lambda_co2(Ts, Tstrat, Tcloud, q, gammaLR=None, dgammaLRdTs=None, Ts0 = 310, dTs = 1):
     """
     CO2 feedback above cloud top
     In:
@@ -386,6 +440,7 @@ def get_lambda_co2(Ts, Tstrat, Tcloud, q, gammaLR=None, dgammaLRdTs=None, Ts0 = 
         gammaLR [K/km]: bulk atmospheric lapse rate (if None, compute)
         dgammaLRdTs [K/km/K]: derivative of bulk atmospheric lapse rate w.r.t. surface temperature (if None, compute)
         Ts0 [K]: threshold surface temperature for CO2 feedback to be active (otherwise zero)
+        dTs [K]: amount of surface warming (default 1 K)
     Out:
         lambda_co2 [W/m^2/K]: CO2 feedback above cloud top
     """
@@ -397,7 +452,7 @@ def get_lambda_co2(Ts, Tstrat, Tcloud, q, gammaLR=None, dgammaLRdTs=None, Ts0 = 
 
     # get d(gammaLR)/dTs
     if dgammaLRdTs is None:
-        dTs = 1.   # compute derivative numerically for now -> assumes a moist-adiabatic response!
+        #dTs = 1.   # compute derivative numerically for now -> assumes a moist-adiabatic response!
         dgammaLRdTs = (cs.get_gammaLR(Ts+dTs, Tstrat) - cs.get_gammaLR(Ts, Tstrat))/dTs   # should be <0
     else:
         pass   # take as input...
@@ -427,7 +482,7 @@ def get_lambda_co2(Ts, Tstrat, Tcloud, q, gammaLR=None, dgammaLRdTs=None, Ts0 = 
 
     lambda_co2 = c_co2*lambda_co2_cool[0]
 
-    return lambda_co2
+    return lambda_co2/dTs
 
 
 ### change in cloud top temperature/local adiabatic temperature
@@ -469,7 +524,7 @@ def dTclouddTs(T_s, Tstrat, T_em_cloud, gammaLR=None, dgammaLRdTs=None):
     return dTclddTs
 
 
-def get_lambda_cloud(nu, T_s, Tstrat, T_em_cloud, RH, qco2, T0=300., gammaLR=None, dgammaLRdTs=None):
+def get_lambda_cloud(nu, T_s, Tstrat, T_em_cloud, RH, qco2, T0=300., gammaLR=None, dgammaLRdTs=None, dTcld_dTs = None, dTs = 1):
     """
     cloud temperature feedback (adapted from surface temperature feedback in Koll et al., 2023)
     In:
@@ -482,7 +537,10 @@ def get_lambda_cloud(nu, T_s, Tstrat, T_em_cloud, RH, qco2, T0=300., gammaLR=Non
         T0 [K]: reference temperature
         gammaLR [K/km]: bulk atmospheric lapse rate (if None, compute)
         dgammaLRdTs [K/km/K]: derivative of bulk atmospheric lapse rate w.r.t. surface temperature (if None, compute)
-    Out:
+        dTcld_dTs [K/K]: derivative of cloud top temperature w.r.t. surface temperature (if None, compute according to
+        fixed pressure)
+        dTs [K]: amount of surface warming (default 1 K)    
+        Out:
         lambda_cloud [W/m^2/K]: cloud temperature feedback
     """
     T_s = np.atleast_1d(T_s)
@@ -497,7 +555,7 @@ def get_lambda_cloud(nu, T_s, Tstrat, T_em_cloud, RH, qco2, T0=300., gammaLR=Non
 
     # get d(gammaLR)/dTs
     if dgammaLRdTs is None:
-        dTs = 1.   # compute derivative numerically for now -> assumes a moist-adiabatic response!
+        #dTs = 1.   # compute derivative numerically for now -> assumes a moist-adiabatic response!
         dgammaLRdTs = (cs.get_gammaLR(T_s+dTs, Tstrat) - cs.get_gammaLR(T_s, Tstrat))/dTs   # should be <0
     else:
         pass   # take as input...
@@ -529,7 +587,10 @@ def get_lambda_cloud(nu, T_s, Tstrat, T_em_cloud, RH, qco2, T0=300., gammaLR=Non
 
     # calculuate feedback
     trans_cntm = np.exp(-np.mean(tau_cnt_cld))
-    dTcld_dTs = dTclouddTs(T_s, Tstrat, T_em_cloud, gammaLR=gammaLR, dgammaLRdTs=dgammaLRdTs)
+
+    if dTcld_dTs is None:
+        dTcld_dTs = dTclouddTs(T_s, Tstrat, T_em_cloud, gammaLR=gammaLR, dgammaLRdTs=dgammaLRdTs)
+
     lambda_cloud = dTcld_dTs * (c_surf*np.pi*am.dPlanckdT_n(np.array([nu_mid]), T_em_cloud) * dnu_1 + c_surf*np.pi*am.dPlanckdT_n(np.array([nu_mid]), T_em_cloud) * trans_cntm * dnu_2)
 
-    return lambda_cloud
+    return lambda_cloud/dTs
